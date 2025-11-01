@@ -122,8 +122,7 @@ class RoboVac(TuyaDevice):
 
     def getHomeAssistantFeatures(self):
         supportedFeatures = (
-            VacuumEntityFeature.BATTERY
-            | VacuumEntityFeature.CLEAN_SPOT
+            VacuumEntityFeature.CLEAN_SPOT
             | VacuumEntityFeature.FAN_SPEED
             | VacuumEntityFeature.LOCATE
             | VacuumEntityFeature.PAUSE
@@ -157,3 +156,12 @@ class RoboVac(TuyaDevice):
 
     def getFanSpeeds(self):
         return ROBOVAC_SERIES_FAN_SPEEDS[self.getRoboVacSeries()]
+
+    def set_boost_iq(self, enabled: bool):
+        """Enable or disable Boost IQ mode."""
+        if not self.model_features & RoboVacEntityFeature.BOOST_IQ:
+            raise ModelNotSupportedException("Boost IQ is not supported on this model")
+        
+        # The DPS code for Boost IQ needs to be determined from TUYA_CODES
+        # Based on the code structure, it appears to be handled via a specific DPS
+        self.tuyaDevice.set_dps({TUYA_CODES.BOOST_IQ: enabled})

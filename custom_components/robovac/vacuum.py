@@ -62,8 +62,6 @@ from .robovac import (
     RoboVacEntityFeature,
 )
 
-from homeassistant.const import ATTR_BATTERY_LEVEL
-
 ATTR_BATTERY_ICON = "battery_icon"
 ATTR_ERROR = "error"
 ATTR_FAN_SPEED = "fan_speed"
@@ -95,23 +93,28 @@ class TUYA_CODES(StrEnum):
     AUTO_RETURN = "135"
     DO_NOT_DISTURB = "107"
     BOOST_IQ = "118"
+    WORK_STATUS = "122"  # More granular work state: "nosweep", "paused", etc.
 
 
 TUYA_CONSUMABLES_CODES = ["142", "116"]
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
-    """Initialize my test integration 2 config entry."""
-    vacuums = config_entry.data[CONF_VACS]
-    for item in vacuums:
-        item = vacuums[item]
-        entity = RoboVacEntity(item)
-        hass.data[DOMAIN][CONF_VACS][item[CONF_ID]] = entity
-        async_add_entities([entity])
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+):
+    _LOGGER.info(f"Setting up vacuum entities for entry {entry.entry_id}")
+    config = hass.data[DOMAIN][entry.entry_id]
+    _LOGGER.info(f"Config data: {config}")
+    vacuums = []
+    for id, item in config[CONF_VACS].items():
+        item[CONF_ID] = id
+        vacuum = RoboVacEntity(item)
+        vacuums.append(vacuum)
+        hass.data[DOMAIN][CONF_VACS][item[CONF_ID]] = vacuum
+        _LOGGER.info(f"Created vacuum entity for device {id}, stored in hass.data")
+
+    async_add_entities(vacuums, update_before_add=True)
+    _LOGGER.info(f"Added {len(vacuums)} vacuum entities")
 
 
 class RoboVacEntity(StateVacuumEntity):
@@ -187,32 +190,51 @@ class RoboVacEntity(StateVacuumEntity):
         return self._attr_ip_address
 
     @property
-    def activity(self) -> str | None:
+    def activity(self) -> VacuumActivity | None:
+        """Return the current vacuum activity."""
+        
         if self.tuya_state is None:
-            return STATE_UNAVAILABLE
-        elif (
-            type(self.error_code) is not None
-            and self.error_code
-            and self.error_code
-            not in [
-                0,
-                "no_error",
-            ]
-        ):
-            _LOGGER.debug(
-                "State changed to error. Error message: {}".format(
-                    getErrorMessage(self.error_code)
-                )
-            )
+            return None
+        
+        # Get work status for more granular state information
+        work_status = getattr(self, 'work_status', None)
+        
+        _LOGGER.debug(
+            f"Activity determination: STATE={self.tuya_state}, "
+            f"WORK_STATUS={work_status}, ERROR={self.error_code}"
+        )
+        
+        # Check for errors first
+        if self.error_code and self.error_code not in [0, "no_error"]:
             return VacuumActivity.ERROR
-        elif self.tuya_state == "Charging" or self.tuya_state == "completed":
+        
+        # Use DPS 122 (WORK_STATUS) for more accurate state when available
+        if work_status == "paused":
+            _LOGGER.info(f"Device paused (WORK_STATUS=paused)")
+            return VacuumActivity.PAUSED
+        elif work_status == "nosweep":
+            # Not actively working - determine if idle or docked based on STATE
+            if self.tuya_state in ["charging", "Charging"]:
+                return VacuumActivity.DOCKED
+            else:
+                return VacuumActivity.IDLE
+        
+        # Fall back to STATE (DPS 15) for other conditions
+        if self.tuya_state in ["charging", "Charging"]:
             return VacuumActivity.DOCKED
-        elif self.tuya_state == "Recharge":
+        elif self.tuya_state in ["Recharge", "completed"]:
             return VacuumActivity.RETURNING
-        elif self.tuya_state == "Sleeping" or self.tuya_state == "standby":
-            return VacuumActivity.IDLE
-        else:
+        elif self.tuya_state in ["running", "Running"]:
+            # Check work_status to see if actually paused
+            if work_status == "paused":
+                return VacuumActivity.PAUSED
             return VacuumActivity.CLEANING
+        elif self.tuya_state in ["standby", "Sleeping"]:
+            return VacuumActivity.IDLE
+        elif self.tuya_state in ["paused"]:
+            return VacuumActivity.PAUSED
+        
+        return VacuumActivity.IDLE
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -253,9 +275,8 @@ class RoboVacEntity(StateVacuumEntity):
         return data
 
     def __init__(self, item) -> None:
-        """Initialize Eufy Robovac"""
-        super().__init__()
-        self._attr_battery_level = 0
+        """Initialize the entity."""
+        self._item = item
         self._attr_name = item[CONF_NAME]
         self._attr_unique_id = item[CONF_ID]
         self._attr_model_code = item[CONF_MODEL]
@@ -263,6 +284,13 @@ class RoboVacEntity(StateVacuumEntity):
         self._attr_access_token = item[CONF_ACCESS_TOKEN]
 
         self.update_failures = 0
+        self.tuyastatus = {}
+        self.tuya_state = None
+        self.work_status = None  # DPS 122 - more granular work state
+        self.error_code = None
+        self._attr_mode = None
+        self._attr_consumables = None
+        self._battery_level = None  # Store battery internally, not as _attr_battery_level
 
         try:
             self.vacuum = RoboVac(
@@ -281,8 +309,6 @@ class RoboVacEntity(StateVacuumEntity):
         self._attr_robovac_supported = self.vacuum.getRoboVacFeatures()
         self._attr_fan_speed_list = self.vacuum.getFanSpeeds()
 
-        self._attr_mode = None
-        self._attr_consumables = None
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, item[CONF_ID])},
             name=item[CONF_NAME],
@@ -327,14 +353,23 @@ class RoboVacEntity(StateVacuumEntity):
     def update_entity_values(self):
         self.tuyastatus = self.vacuum._dps
 
-        # for 15C
-        self._attr_battery_level = self.tuyastatus.get(TUYA_CODES.BATTERY_LEVEL)
+        # Store battery level internally for the battery sensor to access,
+        # but don't set _attr_battery_level to avoid deprecated warning
+        self._battery_level = self.tuyastatus.get(TUYA_CODES.BATTERY_LEVEL)
         self.tuya_state = self.tuyastatus.get(TUYA_CODES.STATE)
+        self.work_status = self.tuyastatus.get(TUYA_CODES.WORK_STATUS)
         self.error_code = self.tuyastatus.get(TUYA_CODES.ERROR_CODE)
         self._attr_mode = self.tuyastatus.get(TUYA_CODES.MODE)
         self._attr_fan_speed = self.tuyastatus.get(TUYA_CODES.FAN_SPEED)
+        
+        # Log DPS 122 to understand its behavior
+        _LOGGER.info(
+            f"Device {self.vacuum.device_id}: STATE(15)={self.tuya_state}, "
+            f"WORK_STATUS(122)={self.work_status}, ERROR={self.error_code}"
+        )
+        
         if self.fan_speed == "No_suction":
-            self._attr_fan_speed = "No Suction"
+            self._attr_fan_speed = "Standard"
         elif self.fan_speed == "Boost_IQ":
             self._attr_fan_speed = "Boost IQ"
         elif self.fan_speed == "Quiet":

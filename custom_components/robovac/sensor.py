@@ -21,11 +21,17 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Initialize my test integration 2 config entry."""
+    _LOGGER.info(f"Setting up sensor entities for entry {config_entry.entry_id}")
     vacuums = config_entry.data[CONF_VACS]
+    _LOGGER.info(f"Found {len(vacuums)} vacuums in config")
+    entities = []
     for item in vacuums:
         item = vacuums[item]
         entity = RobovacSensorEntity(item)
-        async_add_entities([entity])
+        entities.append(entity)
+        _LOGGER.info(f"Created sensor entity for device {item[CONF_ID]}")
+    async_add_entities(entities)
+    _LOGGER.info(f"Added {len(entities)} sensor entities")
 
 class RobovacSensorEntity(SensorEntity):
     _attr_has_entity_name = True
@@ -47,10 +53,12 @@ class RobovacSensorEntity(SensorEntity):
 
     def update(self):
         try:
-            self._battery_level = self.hass.data[DOMAIN][CONF_VACS][self.robovac_id].battery_level
+            vacuum_entity = self.hass.data[DOMAIN][CONF_VACS][self.robovac_id]
+            # Access the internal battery level variable (not _attr_battery_level to avoid deprecation)
+            self._battery_level = vacuum_entity._battery_level
             self._attr_available = True
-        except:
-            _LOGGER.debug("Failed to get battery level for {}".format(self.robovac_id))
+        except Exception as e:
+            _LOGGER.debug(f"Failed to get battery level for {self.robovac_id}: {e}")
             self._battery_level = None
             self._attr_available = False
     
