@@ -263,15 +263,13 @@ class RoboVacEntity(StateVacuumEntity):
             and self.do_not_disturb
         ):
             data[ATTR_DO_NOT_DISTURB] = self.do_not_disturb
-        if self.robovac_supported & RoboVacEntityFeature.BOOST_IQ and self.boost_iq:
-            data[ATTR_BOOST_IQ] = self.boost_iq
+        # Remove Boost IQ from attributes - now available as separate switch entity
         if (
             self.robovac_supported & RoboVacEntityFeature.CONSUMABLES
             and self.consumables
         ):
             data[ATTR_CONSUMABLES] = self.consumables
-        if self.mode:
-            data[ATTR_MODE] = self.mode
+        # Remove Mode from attributes - now available as separate sensor entity
         return data
 
     def __init__(self, item) -> None:
@@ -286,11 +284,11 @@ class RoboVacEntity(StateVacuumEntity):
         self.update_failures = 0
         self.tuyastatus = {}
         self.tuya_state = None
-        self.work_status = None  # DPS 122 - more granular work state
+        self.work_status = None
         self.error_code = None
         self._attr_mode = None
         self._attr_consumables = None
-        self._battery_level = None  # Store battery internally, not as _attr_battery_level
+        self._battery_level = None  # Internal only - not exposed as vacuum attribute
 
         try:
             self.vacuum = RoboVac(
@@ -353,8 +351,7 @@ class RoboVacEntity(StateVacuumEntity):
     def update_entity_values(self):
         self.tuyastatus = self.vacuum._dps
 
-        # Store battery level internally for the battery sensor to access,
-        # but don't set _attr_battery_level to avoid deprecated warning
+        # Store battery level internally - NOT as _attr_battery_level to avoid deprecation
         self._battery_level = self.tuyastatus.get(TUYA_CODES.BATTERY_LEVEL)
         self.tuya_state = self.tuyastatus.get(TUYA_CODES.STATE)
         self.work_status = self.tuyastatus.get(TUYA_CODES.WORK_STATUS)
@@ -362,7 +359,7 @@ class RoboVacEntity(StateVacuumEntity):
         self._attr_mode = self.tuyastatus.get(TUYA_CODES.MODE)
         self._attr_fan_speed = self.tuyastatus.get(TUYA_CODES.FAN_SPEED)
         
-        # Log DPS 122 to understand its behavior
+        # Log state information
         _LOGGER.info(
             f"Device {self.vacuum.device_id}: STATE(15)={self.tuya_state}, "
             f"WORK_STATUS(122)={self.work_status}, ERROR={self.error_code}"
@@ -374,6 +371,7 @@ class RoboVacEntity(StateVacuumEntity):
             self._attr_fan_speed = "Boost IQ"
         elif self.fan_speed == "Quiet":
             self._attr_fan_speed = "Pure"
+        
         # for G30
         self._attr_cleaning_area = self.tuyastatus.get(TUYA_CODES.CLEANING_AREA)
         self._attr_cleaning_time = self.tuyastatus.get(TUYA_CODES.CLEANING_TIME)
@@ -482,3 +480,10 @@ class RoboVacEntity(StateVacuumEntity):
 
     async def async_will_remove_from_hass(self):
         await self.vacuum.async_disable()
+
+    @property
+    def battery_level(self) -> int | None:
+        """Battery level - deprecated, use battery sensor instead."""
+        # Return None to indicate battery level should not be exposed on vacuum entity
+        # The battery sensor entity provides this information instead
+        return None
